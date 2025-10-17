@@ -24,7 +24,7 @@
 
 5. Start the development server:
    ```bash
-  npm run dev
+   npm run dev
 
 After this, you will see the local host (e.g., http://localhost:0000/).
 Click the link, and you can edit the code while viewing the live changes in your browser.
