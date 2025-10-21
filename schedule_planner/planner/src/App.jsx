@@ -1,306 +1,472 @@
-// src/App.jsx
-import React, { useMemo, useState } from "react";
-import { Container, Row, Col, Card, Form, Button, Table, Alert } from "react-bootstrap";
-// App.jsx 内の generateSchedule を置き換え
-const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri"];
-const PERIODS = [1, 2, 3, 4, 5];
+import { useState, useMemo, useEffect } from "react";
+import "./App.css";
 
-// ダミー講義プール（教授名/形式/期末の有無つき）
-const CLASS_POOL = [
-  { name:"Class A", prof:"Dr. Sato",    format:"Face-to-face", final:true  },
-  { name:"Class B", prof:"Dr. Tanaka",  format:"On-demand (online)", final:false },
-  { name:"Class C", prof:"Dr. Suzuki",  format:"Hybrid", final:true },
-  { name:"Seminar X", prof:"Dr. Yamada", format:"Face-to-face", final:false },
-  { name:"Lab Y",     prof:"Dr. Ito",    format:"Face-to-face", final:true },
-  { name:"Workshop Z",prof:"Dr. Watanabe",format:"On-demand (online)", final:false },
-  { name:"Elective M",prof:"Dr. Kobayashi",format:"Hybrid", final:true },
-  { name:"Elective N",prof:"Dr. Kimura", format:"Face-to-face", final:false },
-];
+export default function App() {
+  /* ---------- Preferences state ---------- */
+  const NO = "none";
+  const MAX_CLASSES = 12;
 
-// 簡易スコアで希望に近いコマを選ぶ
-function generateSchedule(prefs) {
-  const grid = Array.from({ length: PERIODS.length }, () =>
-    Array.from({ length: DAYS.length }, () => null)
-  );
-
-  // 1) 使える講義候補をフィルタ
-  let pool = CLASS_POOL.filter(c => {
-    if (prefs.dislikedProf?.trim()) {
-      const bad = prefs.dislikedProf.toLowerCase();
-      if (c.prof.toLowerCase().includes(bad)) return false;
-    }
-    return true;
-  });
-
-  // 2) スロットごとの希望スコア算出関数
-  const scoreSlot = (day, period, course) => {
-    let s = 0;
-
-    // Day Off は埋めない
-    if (prefs.dayOff !== "No Preference") {
-      const off = prefs.dayOff;
-      if ((off === "Monday" && day === "Mon")
-       || (off === "Friday" && day === "Fri")
-       || (off.includes("Mid-week") && day === "Wed")) return -Infinity;
-    }
-
-    // 朝/遅めの希望
-    if (prefs.morningLate === "Prefer Morning" && period <= 2) s += 2;
-    if (prefs.morningLate === "Prefer Late"    && period >= 4) s += 2;
-
-    // 形式の希望
-    if (prefs.format !== "No Preference") {
-      if (course.format === prefs.format) s += 2;
-      else if (prefs.format === "Hybrid" && course.format === "Face-to-face") s += 1; // ゆるめ加点例
-    }
-
-    // 期末の希望
-    if (prefs.finals !== "No Preference") {
-      if (prefs.finals === "Yes" && course.final) s += 2;
-      if (prefs.finals === "No"  && !course.final) s += 2;
-    }
-
-    // リベラルアーツの希望（ここではダミーで Class A/B を一般教養と見なす例）
-    if (prefs.liberalArts !== "No Preference") {
-      const isLA = ["Class A","Class B"].includes(course.name);
-      if (prefs.liberalArts === "Yes, take liberal arts" && isLA) s += 1;
-      if (prefs.liberalArts === "No, focus on major" && !isLA) s += 1;
-    }
-
-    return s;
+  const initial = {
+    time: NO,
+    finals: NO,
+    dayOff: NO,
+    modality: NO,
+    liberalArts: NO,
+    dislikedProfessors: "",
   };
 
-  // 3) 各スロットに高スコアの講義を入れる（最大8コマ）
-  const slotsToFill = 8;
-  let used = new Set();
+  const [values, setValues] = useState(() => {
+    const saved = localStorage.getItem("preferences");
+    return saved ? JSON.parse(saved) : initial;
+  });
+  const [error, setError] = useState("");
+  const [saved, setSaved] = useState(false);
 
-  for (let k = 0; k < slotsToFill; k++) {
-    let best = { i: -1, j: -1, course: null, score: -Infinity };
+  const selectedCount = useMemo(() => {
+    let c = 0;
+    if (values.time !== NO) c++;
+    if (values.finals !== NO) c++;
+    if (values.dayOff !== NO) c++;
+    if (values.modality !== NO) c++;
+    if (values.liberalArts !== NO) c++;
+    if (values.dislikedProfessors.trim() !== "") c++;
+    return c;
+  }, [values]);
 
-    for (let i = 0; i < PERIODS.length; i++) {
-      for (let j = 0; j < DAYS.length; j++) {
-        if (grid[i][j]) continue; // 既に埋まってる
+  useEffect(() => setError(""), [values]);
 
-        for (const c of pool) {
-          if (used.has(c.name)) continue; // 同じ講義は1回まで（仮）
-          const sc = scoreSlot(DAYS[j], PERIODS[i], c);
-          if (sc > best.score) best = { i, j, course: c, score: sc };
+  const trySet = (key, next) => {
+    const prev = values[key];
+    const isText = key === "dislikedProfessors";
+    const prevText = isText ? String(prev).trim() : "";
+    const nextText = isText ? String(next).trim() : "";
+
+    let newCount = selectedCount;
+    if (!isText) {
+      if (prev === NO && next !== NO) newCount++;
+      if (prev !== NO && next === NO) newCount--;
+    } else {
+      if (!prevText && nextText) newCount++;
+      if (prevText && !nextText) newCount--;
+    }
+
+    if (newCount > 4) {
+      setError("You can select up to 4 preferences only.");
+      return;
+    }
+    setValues((v) => ({ ...v, [key]: next }));
+  };
+
+  /* ---------- Mock catalog & schedule logic ---------- */
+
+  const Days = ["Mon", "Tue", "Wed", "Thu", "Fri"];
+  const Periods = [1, 2, 3, 4, 5];
+
+  function buildMockCatalog() {
+    const professors = [
+      "Tanaka", "Suzuki", "Sato", "Kobayashi", "Yamada",
+      "Anderson", "Nguyen", "Kim", "Watanabe", "Garcia",
+    ];
+    const categories = ["liberal-arts", "specialized"];
+    const modalities = ["on-demand", "face-to-face", "hybrid"];
+
+    const catalog = [];
+    let id = 1;
+
+    for (const d of Days) {
+      for (const p of Periods) {
+        const variants = 3;
+        for (let k = 0; k < variants; k++) {
+          const prof = professors[(id + k) % professors.length];
+          const modality = modalities[(p + k) % modalities.length];
+          const category = categories[(id + p + k) % categories.length];
+          const hasFinal = ((id + k) % 2) === 0;
+
+          catalog.push({
+            id: id++,
+            name: `${category === "liberal-arts" ? "LA" : "SP"} ${d}${p}-${k + 1}`,
+            day: d,
+            period: p,
+            professor: prof,
+            hasFinal,
+            modality,
+            category,
+          });
+        }
+      }
+    }
+    return catalog;
+  }
+
+  function generateSchedule(prefs) {
+    const catalog = buildMockCatalog();
+
+    const dayOffShort =
+      prefs.dayOff !== NO
+        ? ["monday", "tuesday", "wednesday", "thursday", "friday"].indexOf(
+            prefs.dayOff
+          ) !== -1
+          ? prefs.dayOff.slice(0, 3)
+          : null
+        : null;
+
+    const disliked = new Set(
+      prefs.dislikedProfessors
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .map((s) => s.toLowerCase())
+    );
+
+    let targetLA = 0.4;
+    if (prefs.liberalArts === "prefer-la") targetLA = 0.6;
+    if (prefs.liberalArts === "prefer-specialized") targetLA = 0.2;
+
+    const bestPerSlot = [];
+    let laCount = 0;
+    let totalAssigned = 0;
+
+    for (const day of Days) {
+      for (const period of Periods) {
+        const key = `${day}-${period}`;
+
+        if (dayOffShort && day.toLowerCase().startsWith(dayOffShort)) {
+          bestPerSlot.push({ key, course: null, score: -Infinity });
+          continue;
+        }
+
+        const candidates = catalog.filter(
+          (c) => c.day === day && c.period === period
+        );
+
+        let best = null;
+        let bestScore = -Infinity;
+
+        for (const c of candidates) {
+          if (disliked.has(c.professor.toLowerCase())) continue;
+
+          let score = 0;
+
+          if (prefs.time === "morning") {
+            if (period <= 2) score += 3;
+            else if (period === 3) score += 0.5;
+            else score -= 0.5;
+          } else if (prefs.time === "late") {
+            if (period >= 4) score += 3;
+            else if (period === 3) score += 0.5;
+            else score -= 0.5;
+          }
+
+          if (prefs.finals === "prefer-finals") {
+            score += c.hasFinal ? 1.5 : -0.5;
+          } else if (prefs.finals === "avoid-finals") {
+            score += c.hasFinal ? -1.0 : 1.0;
+          }
+
+          if (prefs.modality !== NO) {
+            score += c.modality === prefs.modality ? 1.5 : -0.25;
+          }
+
+          const currentRatio = totalAssigned === 0 ? 0 : laCount / totalAssigned;
+          if (c.category === "liberal-arts") {
+            if (currentRatio < targetLA) score += 1.0;
+            else score -= 0.25;
+          } else {
+            if (currentRatio > targetLA) score += 1.0;
+            else score -= 0.25;
+          }
+
+          score += Math.random() * 0.2;
+
+          if (score > bestScore) {
+            bestScore = score;
+            best = c;
+          }
+        }
+
+        bestPerSlot.push({ key, course: best, score: best ? bestScore : -Infinity });
+
+        if (best) {
+          totalAssigned++;
+          if (best.category === "liberal-arts") laCount++;
         }
       }
     }
 
-    // 置ける場所があれば配置
-    if (best.course && best.score > -Infinity) {
-      grid[best.i][best.j] = `${best.course.name} (${best.course.prof})`;
-      used.add(best.course.name);
-    } else {
-      break; // 置けないなら終了
+    const chosen = bestPerSlot
+      .filter((x) => x.course)
+      .sort((a, b) => b.score - a.score);
+    const keepSet = new Set(chosen.slice(0, MAX_CLASSES).map((x) => x.key));
+
+    const finalSchedule = {};
+    for (const { key, course } of bestPerSlot) {
+      finalSchedule[key] = course && keepSet.has(key) ? course : null;
     }
+
+    return finalSchedule;
   }
 
-  return grid; // [periodIdx][dayIdx]
-}
+  const [schedule, setSchedule] = useState(null);
 
-
-function PreferencesForm({ onSave }) {
-  const [prefs, setPrefs] = useState({
-    morningLate: "No Preference",
-    finals: "No Preference",
-    dayOff: "No Preference",
-    format: "No Preference",
-    liberalArts: "No Preference",
-    dislikedProf: "",
-  });
-
-  // 状態更新のショート関数
-  const handleChange = (field, value) => {
-    setPrefs({ ...prefs, [field]: value });
+  /* ---------- Submit / Reset ---------- */
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    if (selectedCount > 4) {
+      setError("You can select up to 4 preferences only.");
+      return;
+    }
+    localStorage.setItem("preferences", JSON.stringify(values));
+    const s = generateSchedule(values);
+    setSchedule(s);
+    setSaved(true);
   };
 
-  return (
-    <Card className="shadow-sm">
-      <Card.Body>
-        <Card.Title className="mb-3">Preferences</Card.Title>
-        <Form
-          className="row g-3"
-          onSubmit={(e) => {
-            e.preventDefault();
-            onSave(prefs);
-          }}
+  const handleReset = () => {
+    setValues(initial);
+    localStorage.removeItem("preferences");
+    setSaved(false);
+    setSchedule(null);
+  };
+
+  /* ---------- Modal for course detail ---------- */
+  const [openCourse, setOpenCourse] = useState(null);
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === "Escape") setOpenCourse(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  const CourseModal = ({ course, onClose }) => {
+    if (!course) return null;
+    return (
+      <div
+        role="dialog"
+        aria-modal="true"
+        onClick={onClose}
+        style={{
+          position: "fixed",
+          inset: 0,
+          background: "rgba(0,0,0,.5)",
+          display: "grid",
+          placeItems: "center",
+          zIndex: 50,
+          padding: 16,
+        }}
+      >
+        <div
+          className="card"
+          onClick={(e) => e.stopPropagation()}
+          style={{ maxWidth: 520, width: "100%" }}
         >
-          {/* 1. Prefer morning or late classes */}
-          <Form.Group as={Col} md={6}>
-            <Form.Label>1. Prefer morning or late classes?</Form.Label>
-            <Form.Select
-              value={prefs.morningLate}
-              onChange={(e) => handleChange("morningLate", e.target.value)}
-            >
-              <option>No Preference</option>
-              <option>Prefer Morning</option>
-              <option>Prefer Late</option>
-            </Form.Select>
-          </Form.Group>
+          <h2 style={{ fontSize: 22, fontWeight: 700 }}>{course.name}</h2>
+          <p className="muted" style={{ marginTop: 6 }}>
+            Details
+          </p>
 
-          {/* 2. Prefer courses with finals */}
-          <Form.Group as={Col} md={6}>
-            <Form.Label>2. Prefer courses with finals?</Form.Label>
-            <Form.Select
-              value={prefs.finals}
-              onChange={(e) => handleChange("finals", e.target.value)}
-            >
-              <option>No Preference</option>
-              <option>Yes</option>
-              <option>No</option>
-            </Form.Select>
-          </Form.Group>
+          <div style={{ marginTop: 12, display: "grid", gap: 8 }}>
+            <Row label="Day" value={course.day} />
+            <Row label="Period" value={String(course.period)} />
+            <Row label="Professor" value={course.professor} />
+            <Row label="Modality" value={course.modality} />
+            <Row label="Final" value={course.hasFinal ? "Yes" : "No"} />
+            <Row label="Category" value={course.category === "liberal-arts" ? "Liberal Arts" : "Specialized"} />
+          </div>
 
-          {/* 3. Prefer having day off */}
-          <Form.Group as={Col} md={6}>
-            <Form.Label>3. Prefer having day off?</Form.Label>
-            <Form.Select
-              value={prefs.dayOff}
-              onChange={(e) => handleChange("dayOff", e.target.value)}
-            >
-              <option>No Preference</option>
-              <option>Monday</option>
-              <option>Friday</option>
-              <option>Mid-week (Wed)</option>
-            </Form.Select>
-          </Form.Group>
+          <div className="btn-row" style={{ justifyContent: "flex-end", marginTop: 16 }}>
+            <button className="btn" onClick={onClose}>Close</button>
+          </div>
+        </div>
+      </div>
+    );
+  };
 
-          {/* 4. Prefer on-demand or face-to-face */}
-          <Form.Group as={Col} md={6}>
-            <Form.Label>4. Prefer on-demand or face-to-face?</Form.Label>
-            <Form.Select
-              value={prefs.format}
-              onChange={(e) => handleChange("format", e.target.value)}
-            >
-              <option>No Preference</option>
-              <option>On-demand (online)</option>
-              <option>Face-to-face</option>
-              <option>Hybrid</option>
-            </Form.Select>
-          </Form.Group>
-
-          {/* 5. Prefer taking liberal arts or not */}
-          <Form.Group as={Col} md={6}>
-            <Form.Label>5. Prefer taking liberal arts or not</Form.Label>
-            <Form.Select
-              value={prefs.liberalArts}
-              onChange={(e) => handleChange("liberalArts", e.target.value)}
-            >
-              <option>No Preference</option>
-              <option>Yes, take liberal arts</option>
-              <option>No, focus on major</option>
-            </Form.Select>
-          </Form.Group>
-
-          {/* 6. Any professors you don't like */}
-          <Form.Group as={Col} md={6}>
-            <Form.Label>6. Any professors you don't like? (optional)</Form.Label>
-            <Form.Control
-              type="text"
-              placeholder="Enter name(s)"
-              value={prefs.dislikedProf}
-              onChange={(e) => handleChange("dislikedProf", e.target.value)}
-            />
-          </Form.Group>
-
-          {/* Save button */}
-          <Col xs={12}>
-            <Button type="submit" variant="primary">
-              Save Preferences
-            </Button>
-          </Col>
-        </Form>
-      </Card.Body>
-    </Card>
+  const Row = ({ label, value }) => (
+    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+      <div className="muted" style={{ width: 100, fontSize: 14 }}>{label}</div>
+      <div style={{ fontWeight: 600 }}>{value}</div>
+    </div>
   );
-}
 
+  /* ---------- UI Components ---------- */
+  const Shell = ({ children }) => (
+    <div className="shell">
+      <div className="container">{children}</div>
+    </div>
+  );
 
-// ScheduleView を差し替え
-function ScheduleView({ prefs, onBack }) {
-  const [nonce, setNonce] = useState(0);            // ← 再生成トリガ
+  const Card = ({ children }) => <div className="card">{children}</div>;
 
-  const schedule = useMemo(() => generateSchedule(prefs), [prefs, nonce]); // ← 依存に追加
+  const Field = ({ label, help, children }) => (
+    <div className="field">
+      <label className="field__label">{label}</label>
+      {children}
+      {help && <div className="muted" style={{ fontSize: 12 }}>{help}</div>}
+    </div>
+  );
+
+  const Select = (props) => <select className="select" {...props} />;
+  const Textarea = (props) => <textarea className="textarea" rows={3} {...props} />;
+
+  /* ---------- Views ---------- */
+  if (saved) {
+    const totalClasses = schedule
+      ? Object.values(schedule).filter(Boolean).length
+      : 0;
+
+    return (
+      <Shell>
+        <Card>
+          <h1 style={{ fontSize: 28, fontWeight: 700 }}>Recommended Schedule</h1>
+          <p className="muted" style={{ marginTop: 6 }}>
+            Generated from your preferences (demo data). Total classes: {totalClasses} / {MAX_CLASSES}
+          </p>
+
+          <div className="tt-grid">
+            <div className="tt-head">Time</div>
+            {Days.map((d) => (
+              <div key={d} className="tt-head">{d}</div>
+            ))}
+            {Periods.map((p) => (
+              <>
+                <div key={`p-${p}`} className="tt-period">Period {p}</div>
+                {Days.map((d) => {
+                  const key = `${d}-${p}`;
+                  const course = schedule?.[key];
+                  const clickable = Boolean(course);
+                  return (
+                    <button
+                      key={key}
+                      className="tt-cell"
+                      onClick={() => clickable && setOpenCourse(course)}
+                      disabled={!clickable}
+                      style={{
+                        background: "var(--panel)",
+                        border: "1px solid var(--panel-border)",
+                        borderRadius: "var(--radius)",
+                        padding: 10,
+                        minHeight: 60,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        textAlign: "center",
+                        color: "var(--ink)",
+                        opacity: clickable ? 0.95 : 0.6,
+                        cursor: clickable ? "pointer" : "default",
+                      }}
+                      aria-label={clickable ? `Open details for ${course.name}` : "Empty slot"}
+                      title={clickable ? "Click to view details" : ""}
+                    >
+                      {course ? course.name : <span className="muted">-</span>}
+                    </button>
+                  );
+                })}
+              </>
+            ))}
+          </div>
+
+          <div className="btn-row">
+            <button className="btn btn--ghost" onClick={() => setSaved(false)}>
+              Back to Preferences
+            </button>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                className="btn"
+                onClick={() => {
+                  const s = generateSchedule(values);
+                  setSchedule(s);
+                }}
+              >
+                Generate Again
+              </button>
+            </div>
+          </div>
+          <CourseModal course={openCourse} onClose={() => setOpenCourse(null)} />
+        </Card>
+      </Shell>
+    );
+  }
 
   return (
-    <>
-      <Card className="shadow-sm">
-        <Card.Body>
-          <div className="d-flex justify-content-between align-items-center mb-2">
-            <Card.Title className="mb-0">Recommended Timetable (1 week)</Card.Title>
-            <div className="d-flex gap-2">
-              <Button variant="outline-secondary" onClick={onBack}>Back to Preferences</Button>
-              <Button variant="outline-primary" onClick={() => setNonce(n => n + 1)}>
-                Generate Again
-              </Button>
+    <Shell>
+      <Card>
+        <h1 style={{ fontSize: 28, fontWeight: 700 }}>Preferences</h1>
+        <p className="muted" style={{ marginTop: 6 }}>
+          You can select up to <strong>4</strong> preferences. “No Preference” will not be counted.
+        </p>
+
+        <form onSubmit={handleSubmit} className="form__row">
+          <Field label="1. Prefer morning or late classes?">
+            <Select value={values.time} onChange={(e) => trySet("time", e.target.value)}>
+              <option value={NO}>No Preference</option>
+              <option value="morning">Morning</option>
+              <option value="late">Late</option>
+            </Select>
+          </Field>
+
+          <Field label="2. Prefer courses with final exams?">
+            <Select value={values.finals} onChange={(e) => trySet("finals", e.target.value)}>
+              <option value={NO}>No Preference</option>
+              <option value="prefer-finals">Prefer finals</option>
+              <option value="avoid-finals">Prefer no finals</option>
+            </Select>
+          </Field>
+
+          <Field label="3. Prefer having a day off?" help="One day off in a week (e.g., Wednesday).">
+            <Select value={values.dayOff} onChange={(e) => trySet("dayOff", e.target.value)}>
+              <option value={NO}>No Preference</option>
+              <option value="monday">Monday</option>
+              <option value="tuesday">Tuesday</option>
+              <option value="wednesday">Wednesday</option>
+              <option value="thursday">Thursday</option>
+              <option value="friday">Friday</option>
+            </Select>
+          </Field>
+
+          <Field label="4. Prefer on-demand or face-to-face?">
+            <Select value={values.modality} onChange={(e) => trySet("modality", e.target.value)}>
+              <option value={NO}>No Preference</option>
+              <option value="on-demand">On-demand</option>
+              <option value="face-to-face">Face-to-face</option>
+              <option value="hybrid">Hybrid</option>
+            </Select>
+          </Field>
+
+          <Field label="5. Prefer taking liberal arts or not?">
+            <Select value={values.liberalArts} onChange={(e) => trySet("liberalArts", e.target.value)}>
+              <option value={NO}>No Preference</option>
+              <option value="prefer-la">Prefer liberal arts</option>
+              <option value="prefer-specialized">Prefer specialized</option>
+            </Select>
+          </Field>
+
+          <Field label="6. Professors you want to avoid?">
+            <Textarea
+              value={values.dislikedProfessors}
+              onChange={(e) => trySet("dislikedProfessors", e.target.value)}
+              placeholder="e.g., Tanaka, Suzuki"
+            />
+          </Field>
+
+          <div className="btn-row">
+            <div className="muted" style={{ fontSize: 14 }}>
+              Selected: <strong>{selectedCount}</strong> / 4
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button type="button" className="btn btn--ghost" onClick={handleReset}>
+                Reset
+              </button>
+              <button type="submit" className="btn">
+                Save Preferences
+              </button>
             </div>
           </div>
 
-          {/* 6つの preference のサマリ（必要なら） */}
-          {/* ... 省略（前回のAlert部分） ... */}
-
-          <div className="table-responsive">
-            <Table bordered hover className="align-middle text-center">
-              <thead className="table-light">
-                <tr>
-                  <th style={{ width: 100 }}>Period</th>
-                  {DAYS.map(d => <th key={d}>{d}</th>)}
-                </tr>
-              </thead>
-              <tbody>
-                {PERIODS.map((p, i) => (
-                  <tr key={p}>
-                    <th>{p}</th>
-                    {DAYS.map((d, j) => (
-                      <td key={`${i}-${j}`}>
-                        {schedule[i][j] ?? <span className="text-muted">—</span>}
-                      </td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </Table>
-          </div>
-        </Card.Body>
+          {error && <div className="alert--error">{error}</div>}
+        </form>
       </Card>
-
-      <div className="position-fixed bottom-0 end-0 m-3">
-        <Button size="lg" variant="success">Confirm</Button>
-      </div>
-    </>
-  );
-}
-
-
-
-export default function App() {
-  const [prefs, setPrefs] = useState(null);
-  return (
-    <>
-      <nav className="navbar navbar-expand-lg bg-body-tertiary border-bottom">
-        <div className="container">
-          <a className="navbar-brand fw-bold" href="#">Schedule Planner</a>
-        </div>
-      </nav>
-
-      <Container className="py-4">
-        <Row className="g-4">
-          <Col lg={8} className="mx-auto">
-            {!prefs ? (
-              <PreferencesForm onSave={setPrefs} />
-            ) : (
-              <ScheduleView
-                prefs={prefs}
-                onBack={() => setPrefs(null)}
-                onRegenerate={() => setPrefs({ ...prefs })} // 依存で再生成
-              />
-            )}
-          </Col>
-        </Row>
-      </Container>
-    </>
+    </Shell>
   );
 }
